@@ -225,6 +225,7 @@ export default function CashflowDashboard() {
         name: monthLabel(r.month),
         みずほ残高: r.endBalance,
         現預金残高: cash,
+        "資産残高(投資)": invest,
         総資産: cash != null ? cash + invest : null,
         月次CF: r.cf,
         type: r.type,
@@ -679,6 +680,8 @@ export default function CashflowDashboard() {
                       fill={f ? "#fff" : "#1E2A78"} stroke="#1E2A78" strokeWidth={1.6} />;
                   }} />
                 <Line dataKey="現預金残高" stroke="#0E7A8A" strokeWidth={2} dot={false} />
+                {/* ツールチップ表示専用の系列(線は描画しない) */}
+                <Line dataKey="資産残高(投資)" stroke="#6B4FA8" strokeWidth={0} dot={false} activeDot={false} legendType="none" />
                 <Line dataKey="総資産" stroke="#0B7A50" strokeWidth={2} strokeDasharray="6 3" dot={false} />
               </ComposedChart>
             </ResponsiveContainer>
