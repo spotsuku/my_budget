@@ -3,25 +3,29 @@
 // 2025-11, 2025-12, 2026-03〜2026-06: 通帳スクショより(取引明細つき、rev:2)
 export const INITIAL_MONTHS = [
   {
-    month: "2025-07", type: "actual", income: 899402, expense: 999881,
+    month: "2025-07", type: "actual", rev: 2, income: 899402, expense: 999881,
+    endBalance: 566297, // 7/31 アプリ明細より(月初は未判明)
     categories: { "セゾン": 176500, "楽天カード": 267872, "エポス": 13200, "ダイナース": 268484,
       "PayPay": 35605, "現金引出し": 33000, "自動車": 142300, "ソニー生命": 27260,
       "雑費": 660, "仕送り ふみか": 35000 },
   },
   {
-    month: "2025-08", type: "actual", income: 2139389, expense: 1213505,
+    month: "2025-08", type: "actual", rev: 2, income: 2139389, expense: 1213505,
+    startBalance: 566297, endBalance: 1341961, // アプリ明細より。シートのCFと-150,220不一致(要全明細検証)
     categories: { "セゾン": 34060, "楽天カード": 168316, "エポス": 13200, "ダイナース": 64066,
       "PayPay": 31000, "現金引出し": 115000, "家賃": 312200, "自動車": 142300,
       "ソニー生命": 27260, "雑費": 156103, "仕送り ふみか": 150000 },
   },
   {
-    month: "2025-09", type: "actual", income: 665020, expense: 1449632,
+    month: "2025-09", type: "actual", rev: 2, income: 665020, expense: 1449632,
+    startBalance: 1341961, endBalance: 557349, // アプリ明細より。シートのCFと完全一致
     categories: { "セゾン": 29060, "楽天カード": 337603, "エポス": 13200, "ダイナース": 635209,
       "PayPay": 10000, "家賃": 155000, "自動車": 142300, "ソニー生命": 27260,
       "仕送り ふみか": 100000 },
   },
   {
-    month: "2025-10", type: "actual", income: 1000000, expense: 986545,
+    month: "2025-10", type: "actual", rev: 2, income: 1000000, expense: 986545,
+    startBalance: 557349, endBalance: 365963, // アプリ明細より(10/31末=11月初と一致)。シートのCFと-204,841不一致(要全明細検証)
     categories: { "セゾン": 30000, "楽天カード": 242776, "オリコ": 11839, "三井住友": 5825,
       "エポス": 13207, "ダイナース": 240684, "PayPay": 30000, "現金引出し": 10000,
       "家賃": 155000, "自動車": 142300, "ソニー生命": 27260, "奨学金返済": 17654,
@@ -95,13 +99,15 @@ export const INITIAL_MONTHS = [
     ],
   },
   {
-    month: "2026-01", type: "actual", income: 1090918, expense: 565182,
+    month: "2026-01", type: "actual", rev: 2, income: 1090918, expense: 565182,
+    startBalance: 867614, endBalance: 1215350, // アプリ明細より(1/30)。シートは家賃155,000欠落などCFと-178,000不一致(要全明細検証)
     categories: { "セゾン": 40060, "楽天カード": 187111, "エポス": 13200, "ダイナース": 42211,
       "ワンバンク": 40000, "PayPay": 6000, "現金引出し": 10000, "自動車": 142300,
       "ソニー生命": 6316, "雑費": 330, "奨学金返済": 17654, "仕送り ふみか": 60000 },
   },
   {
-    month: "2026-02", type: "actual", income: 570000, expense: 380299,
+    month: "2026-02", type: "actual", rev: 2, income: 570000, expense: 380299,
+    startBalance: 1215350, endBalance: 28480, // アプリ明細より(2/28末=3月初と一致)。実CF-1,186,870に対しシート+189,701と大幅不一致。ゆうちょへの600,000(2/11)等が未計上の可能性大(要全明細検証)
     categories: { "セゾン": 90520, "ダイナース": 115669, "ワンバンク": 115000,
       "PayPay": 46000, "雑費": 110, "その他(未分類)": 13000 },
   },
@@ -303,6 +309,15 @@ export const SUB_ACCOUNTS = [
     // 主口座の摘要とのマッチング用。この口座宛の資産移動は「現預金の口座間移動」であり投資ではない
     match: "ミキ トモヒロ",
     months: [
+      // 2025-07〜2026-01 はアプリの月末残高グラフより(明細未取得のため残高のみ)
+      { month: "2025-07", type: "actual", endBalance: 5978 },
+      { month: "2025-08", type: "actual", startBalance: 5978, endBalance: 5978, income: 0, expense: 0 },
+      { month: "2025-09", type: "actual", startBalance: 5978, endBalance: 5978, income: 0, expense: 0 },
+      // 10月に-4,992の変動あり(内訳未確認。差額を出金として計上)
+      { month: "2025-10", type: "actual", startBalance: 5978, endBalance: 986, income: 0, expense: 4992 },
+      { month: "2025-11", type: "actual", startBalance: 986, endBalance: 986, income: 0, expense: 0 },
+      { month: "2025-12", type: "actual", startBalance: 986, endBalance: 986, income: 0, expense: 0 },
+      { month: "2026-01", type: "actual", startBalance: 986, endBalance: 986, income: 0, expense: 0 },
       {
         month: "2026-02", type: "actual", startBalance: 986, endBalance: 500656,
         income: 600000, expense: 100330,
