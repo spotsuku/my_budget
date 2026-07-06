@@ -289,6 +289,9 @@ export const INITIAL_ASSUMPTIONS = {
   fixedCosts: INITIAL_FIXED,
   variableBudgets: INITIAL_VARIABLE,
   assetBudgets: INITIAL_ASSET,
+  // 今後予定している単発支出。該当月の予測出金に上乗せされる
+  // 例: { month: "2026-09", name: "車検", amount: 120000 }
+  oneOffs: [],
 };
 
 // サブ口座:ゆうちょ銀行(ミキ トモヒロ 個人口座 ****581)。通帳スクショ(2026-02〜2026-06)より
@@ -297,6 +300,8 @@ export const SUB_ACCOUNTS = [
   {
     id: "yucho",
     name: "ゆうちょ銀行(****581)",
+    // 主口座の摘要とのマッチング用。この口座宛の資産移動は「現預金の口座間移動」であり投資ではない
+    match: "ミキ トモヒロ",
     months: [
       {
         month: "2026-02", type: "actual", startBalance: 986, endBalance: 500656,

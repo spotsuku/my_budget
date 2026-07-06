@@ -42,10 +42,11 @@ export default function CashflowDashboard() {
         }
         if (d.assumptions) {
           if (d.assumptions.fixedCosts) {
-            // 資産リスト導入前の保存データには assetBudgets がないので初期値を補う
+            // 旧バージョンの保存データにないフィールド(資産リスト・単発支出)は初期値を補う
             setAssumptions({
               ...d.assumptions,
               assetBudgets: d.assumptions.assetBudgets ?? INITIAL_ASSUMPTIONS.assetBudgets,
+              oneOffs: d.assumptions.oneOffs ?? [],
             });
           } else {
             setAssumptions({ ...INITIAL_ASSUMPTIONS, income: d.assumptions.income ?? 560000 });
@@ -111,6 +112,43 @@ export default function CashflowDashboard() {
     return { perMonth, totals, totalOut, totalIn, net: totalOut - totalIn };
   }, [months, assetItems]);
 
+  // 投資項目 = 資産項目のうちサブ口座(ゆうちょ等の現預金)に対応しないもの(楽天証券など)
+  const investItems = useMemo(
+    () => assetItems.filter(
+      (b) => !SUB_ACCOUNTS.some((acc) => acc.match && nameMatch(acc.match, b.match || b.name))
+    ),
+    [assetItems]
+  );
+
+  // 投資への純移動の累計(月末時点)。移動額ベースで評価額(時価)ではない
+  const investCumByMonth = useMemo(() => {
+    const map = new Map();
+    const sorted = [...months].sort((a, b) => a.month.localeCompare(b.month));
+    let cum = 0;
+    for (const m of sorted) {
+      for (const b of investItems) {
+        const key = b.match || b.name;
+        for (const [cn, cv] of Object.entries(m.categories || {})) if (nameMatch(key, cn)) cum += cv;
+        for (const [dn, dv] of Object.entries(m.incomeDetail || {})) if (nameMatch(key, dn)) cum -= dv;
+      }
+      map.set(m.month, cum);
+    }
+    return map;
+  }, [months, investItems]);
+
+  // サブ口座(ゆうちょ)の月末残高。判明前の月は最初の月初残高、判明後は直近の月末残高で補完
+  const subBalanceAt = (month) => {
+    let total = 0;
+    for (const acc of SUB_ACCOUNTS) {
+      const ms = acc.months;
+      if (!ms.length) continue;
+      let bal = ms[0].startBalance ?? 0;
+      for (const mm of ms) if (mm.month <= month) bal = mm.endBalance;
+      total += bal;
+    }
+    return total;
+  };
+
   // 全実績データの整合性チェック(取込・削除のたびに再計算)。サブ口座(ゆうちょ)も同じルールで検証
   const validationWarnings = useMemo(() => {
     const main = validateMonths(months);
@@ -120,7 +158,7 @@ export default function CashflowDashboard() {
     return [...main, ...sub];
   }, [months]);
 
-  // 実績+12ヶ月予測を合成
+  // 実績+12ヶ月予測を合成。予測月には登録済みの単発支出を上乗せする
   const rows = useMemo(() => {
     const sorted = [...months].sort((a, b) => a.month.localeCompare(b.month));
     const out = sorted.map((m) => ({
@@ -129,16 +167,25 @@ export default function CashflowDashboard() {
     }));
     const last = out[out.length - 1];
     if (!last) return out;
+    const oneOffsByMonth = new Map();
+    for (const o of assumptions.oneOffs || []) {
+      if (!o.month) continue;
+      if (!oneOffsByMonth.has(o.month)) oneOffsByMonth.set(o.month, []);
+      oneOffsByMonth.get(o.month).push(o);
+    }
     let bal = last.endBalance ?? (last.startBalance + last.cf);
     let cur = last.month;
     for (let i = 1; i <= 12; i++) {
       cur = addMonth(cur, 1);
+      const oneOffs = oneOffsByMonth.get(cur) || [];
+      const extra = oneOffs.reduce((s, o) => s + (Number(o.amount) || 0), 0);
       const start = bal;
-      bal = start + budgetCF;
+      bal = start + budgetCF - extra;
       out.push({
         month: cur, type: "forecast",
         startBalance: start, endBalance: bal,
-        income: assumptions.income, expense: budgetExpense, cf: budgetCF,
+        income: assumptions.income, expense: budgetExpense + extra, cf: budgetCF - extra,
+        oneOffs,
       });
     }
     return out;
@@ -160,12 +207,30 @@ export default function CashflowDashboard() {
     [rows]
   );
 
-  const chartData = displayRows.map((r) => ({
-    name: monthLabel(r.month),
-    残高: r.endBalance,
-    月次CF: r.cf,
-    type: r.type,
-  }));
+  // チャート用:三菱UFJ残高に加え、現預金残高(+ゆうちょ)と総資産(現預金+投資移動累計)を系列化
+  const chartData = useMemo(() => {
+    const investBudget = sum(investItems);
+    let lastInvest = 0;
+    return displayRows.map((r) => {
+      const cash = r.endBalance != null ? r.endBalance + subBalanceAt(r.month) : null;
+      let invest;
+      if (r.type === "actual") {
+        invest = investCumByMonth.get(r.month) ?? lastInvest;
+        lastInvest = invest;
+      } else {
+        invest = lastInvest + investBudget; // 予測期間は投資予算ぶん毎月積み上がる想定
+        lastInvest = invest;
+      }
+      return {
+        name: monthLabel(r.month),
+        三菱UFJ残高: r.endBalance,
+        現預金残高: cash,
+        総資産: cash != null ? cash + invest : null,
+        月次CF: r.cf,
+        type: r.type,
+      };
+    });
+  }, [displayRows, investCumByMonth, investItems]);
 
   const selRow = rows.find((r) => r.month === selected && r.type === "actual");
 
@@ -367,6 +432,25 @@ export default function CashflowDashboard() {
     });
   };
 
+  // 単発支出(予定)の編集
+  const updateOneOff = (idx, field, value) => {
+    setAssumptions((a) => ({
+      ...a,
+      oneOffs: (a.oneOffs || []).map((x, i) =>
+        i === idx ? { ...x, [field]: field === "amount" ? Number(value) || 0 : value } : x
+      ),
+    }));
+  };
+  const addOneOff = () => {
+    setAssumptions((a) => ({
+      ...a,
+      oneOffs: [...(a.oneOffs || []), { month: addMonth(latestActual?.month || "2026-06", 1), name: "", amount: 0 }],
+    }));
+  };
+  const removeOneOff = (idx) => {
+    setAssumptions((a) => ({ ...a, oneOffs: (a.oneOffs || []).filter((_, i) => i !== idx) }));
+  };
+
   // ---------- スタイル ----------
   const S = {
     page: {
@@ -527,10 +611,21 @@ export default function CashflowDashboard() {
           </div>
         </div>
         <div style={S.card}>
-          <div style={S.label}>資産への移動(累計)</div>
-          <div style={{ ...S.big, fontSize: 20, color: "#0B7A50" }}>{yen(assetStats.totalOut)}</div>
+          <div style={S.label}>現預金残高(判明分)</div>
+          <div style={{ ...S.big, fontSize: 20, color: "#0E7A8A" }}>
+            {latestActual ? yen((latestActual.endBalance ?? 0) + subBalanceAt(latestActual.month)) : "—"}
+          </div>
           <div style={{ fontSize: 11, color: "#6A7190", marginTop: 4 }}>
-            資産から {yen(assetStats.totalIn)} / 純移動 {yenSigned(assetStats.net)}
+            三菱UFJ {yen(latestActual?.endBalance)} + ゆうちょ {latestActual ? yen(subBalanceAt(latestActual.month)) : "—"}
+          </div>
+        </div>
+        <div style={S.card}>
+          <div style={S.label}>総資産(現預金+投資)</div>
+          <div style={{ ...S.big, fontSize: 20, color: "#0B7A50" }}>
+            {latestActual ? yen((latestActual.endBalance ?? 0) + subBalanceAt(latestActual.month) + (investCumByMonth.get(latestActual.month) ?? 0)) : "—"}
+          </div>
+          <div style={{ fontSize: 11, color: "#6A7190", marginTop: 4 }}>
+            投資への純移動累計 {yenSigned(investCumByMonth.get(latestActual?.month) ?? 0)}(評価額ではない)
           </div>
         </div>
       </div>
@@ -577,144 +672,23 @@ export default function CashflowDashboard() {
                       opacity={d.type === "forecast" ? 0.55 : 1} />
                   ))}
                 </Bar>
-                <Line dataKey="残高" stroke="#1E2A78" strokeWidth={2.4}
+                <Line dataKey="三菱UFJ残高" stroke="#1E2A78" strokeWidth={2.4}
                   dot={(p) => {
                     const f = chartData[p.index]?.type === "forecast";
                     return <circle key={p.index} cx={p.cx} cy={p.cy} r={3.2}
                       fill={f ? "#fff" : "#1E2A78"} stroke="#1E2A78" strokeWidth={1.6} />;
                   }} />
+                <Line dataKey="現預金残高" stroke="#0E7A8A" strokeWidth={2} dot={false} />
+                <Line dataKey="総資産" stroke="#0B7A50" strokeWidth={2} strokeDasharray="6 3" dot={false} />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
           <div style={{ fontSize: 11, color: "#6A7190", padding: "4px 0 10px 20px" }}>
-            ○ 白抜きの点・薄い棒 = 予測(予算合計から計算)/ 赤点線 = 残高ゼロライン
+            ○ 白抜きの点・薄い棒 = 予測(予算合計から計算)/ 赤点線 = 残高ゼロライン<br />
+            現預金残高 = 三菱UFJ + ゆうちょ / 総資産(緑破線)= 現預金 + 投資への純移動累計(評価額ではなく移動額ベース)
           </div>
         </div>
       </div>
-
-      {/* 資産への移動(投資・自己口座) */}
-      {assetStats.perMonth.length > 0 && (
-        <div style={S.section}>
-          <div style={{ ...S.card, overflowX: "auto" }}>
-            <h2 style={S.h2}>資産への移動(楽天証券・ゆうちょ銀行)</h2>
-            <div style={{ fontSize: 12, color: "#3A4160", lineHeight: 1.8, marginBottom: 10 }}>
-              楽天証券への入金と、ご自身のゆうちょ銀行口座(ミキ トモヒロ宛振込)への移動は
-              <b>消費ではなく資産移動</b>として支出から分けて集計しています。
-              通帳ベースの入金・出金・残高はそのまま(銀行から出ていくお金として月次CFには含まれます)。
-              金額は移動額ベースで、証券口座の評価額(時価)ではありません。
-            </div>
-            <div style={{ maxHeight: 320, overflow: "auto" }}>
-            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 480 }}>
-              <thead>
-                <tr>
-                  <th style={{ ...S.th, textAlign: "left" }}>月</th>
-                  <th style={S.th}>資産へ(出金)</th>
-                  <th style={S.th}>資産から(入金)</th>
-                  <th style={S.th}>純移動</th>
-                </tr>
-              </thead>
-              <tbody>
-                {assetStats.perMonth.map((r) => (
-                  <tr key={r.month}>
-                    <td style={{ ...S.td, textAlign: "left", fontWeight: 700 }}>{monthLabel(r.month)}</td>
-                    <td style={{ ...S.td, color: "#0B7A50" }}>{r.out ? yen(r.out) : "—"}</td>
-                    <td style={{ ...S.td, color: "#6A7190" }}>{r.in ? yen(r.in) : "—"}</td>
-                    <td style={{ ...S.td, fontWeight: 700, color: r.net >= 0 ? "#0B7A50" : "#B25E12" }}>{yenSigned(r.net)}</td>
-                  </tr>
-                ))}
-                <tr>
-                  <td style={{ ...S.td, textAlign: "left", fontWeight: 800, borderTop: "2px solid #E4E7F0" }}>累計</td>
-                  <td style={{ ...S.td, fontWeight: 800, borderTop: "2px solid #E4E7F0", color: "#0B7A50" }}>{yen(assetStats.totalOut)}</td>
-                  <td style={{ ...S.td, fontWeight: 800, borderTop: "2px solid #E4E7F0", color: "#6A7190" }}>{yen(assetStats.totalIn)}</td>
-                  <td style={{ ...S.td, fontWeight: 800, borderTop: "2px solid #E4E7F0", color: assetStats.net >= 0 ? "#0B7A50" : "#B25E12" }}>{yenSigned(assetStats.net)}</td>
-                </tr>
-              </tbody>
-            </table>
-            </div>
-            <div style={{ fontSize: 11, color: "#6A7190", marginTop: 8 }}>
-              内訳:{assetStats.totals.map((t) =>
-                `${t.name} 出 ${yen(t.out)} / 入 ${yen(t.in)}(純移動 ${yenSigned(t.out - t.in)})`).join("、")}
-            </div>
-
-            {/* サブ口座(ゆうちょ)の実残高推移 */}
-            {SUB_ACCOUNTS.map((acc) => {
-              const last = acc.months[acc.months.length - 1];
-              const txs = acc.months.flatMap((m) => m.transactions || []);
-              return (
-                <div key={acc.id} style={{ marginTop: 20, borderTop: "1px solid #E4E7F0", paddingTop: 14 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#141A4E" }}>{acc.name} 残高推移(通帳より)</div>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: "#0B7A50" }}>
-                      最新残高 {yen(last?.endBalance)}({last ? monthLabel(last.month) : "—"}末)
-                    </div>
-                  </div>
-                  <div style={{ maxHeight: 280, overflow: "auto", marginTop: 8 }}>
-                    <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 480 }}>
-                      <thead>
-                        <tr>
-                          <th style={{ ...S.th, textAlign: "left" }}>月</th>
-                          <th style={S.th}>月初残高</th>
-                          <th style={S.th}>入金</th>
-                          <th style={S.th}>出金</th>
-                          <th style={S.th}>月末残高</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {acc.months.map((m) => (
-                          <tr key={m.month}>
-                            <td style={{ ...S.td, textAlign: "left", fontWeight: 700 }}>{monthLabel(m.month)}</td>
-                            <td style={S.td}>{yen(m.startBalance)}</td>
-                            <td style={{ ...S.td, color: "#0B7A50" }}>{m.income ? yen(m.income) : "—"}</td>
-                            <td style={{ ...S.td, color: "#C13A55" }}>{m.expense ? yen(m.expense) : "—"}</td>
-                            <td style={{ ...S.td, fontWeight: 700 }}>{yen(m.endBalance)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {txs.length > 0 && (
-                    <div style={{ maxHeight: 240, overflow: "auto", marginTop: 8 }}>
-                      <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 480 }}>
-                        <thead>
-                          <tr>
-                            <th style={{ ...S.th, textAlign: "left" }}>日付</th>
-                            <th style={{ ...S.th, textAlign: "left" }}>摘要</th>
-                            <th style={S.th}>金額</th>
-                            <th style={S.th}>残高</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {txs.map((t, i) => (
-                            <tr key={i}>
-                              <td style={{ ...S.td, textAlign: "left", color: "#6A7190", fontSize: 12 }}>{t.date}</td>
-                              <td style={{ ...S.td, textAlign: "left" }}>{t.name}</td>
-                              <td style={{ ...S.td, fontWeight: 700, color: t.amount < 0 ? "#C13A55" : "#0B7A50" }}>{yenSigned(t.amount)}</td>
-                              <td style={{ ...S.td, color: "#6A7190" }}>{yen(t.balance)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-
-            {/* 判明している資産の合計 */}
-            {latestActual && (
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#141A4E", marginTop: 14, background: "#F0F7F3", borderRadius: 8, padding: "10px 14px" }}>
-                判明している口座残高合計({monthLabel(latestActual.month)}末):
-                {yen((latestActual.endBalance ?? 0) + SUB_ACCOUNTS.reduce((s, a) => s + (a.months[a.months.length - 1]?.endBalance ?? 0), 0))}
-                <span style={{ fontWeight: 400, color: "#3A4160" }}>
-                  (三菱UFJ {yen(latestActual.endBalance)}
-                  {SUB_ACCOUNTS.map((a) => ` + ${a.name} ${yen(a.months[a.months.length - 1]?.endBalance)}`).join("")}
-                  。楽天証券の評価額は未反映)
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* 予算設定 */}
       <div style={S.section}>
@@ -739,6 +713,33 @@ export default function CashflowDashboard() {
             <BudgetList kind="fixed" title="固定費" list={assumptions.fixedCosts} total={fixedTotal} accent="#2F3DA8" />
             <BudgetList kind="variable" title="変動費(予算)" list={assumptions.variableBudgets} total={varTotal} accent="#B25E12" />
             <BudgetList kind="asset" title="資産へ(投資・自己口座)" list={assumptions.assetBudgets || []} total={assetTotal} accent="#0B7A50" />
+          </div>
+
+          {/* 単発支出(予定) */}
+          <div style={{ marginTop: 24, borderTop: "1px solid #E4E7F0", paddingTop: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#141A4E", marginBottom: 4 }}>単発支出(予定)</div>
+            <div style={{ fontSize: 12, color: "#6A7190", marginBottom: 10 }}>
+              車検・旅行・家電の買い替えなど、毎月ではない支出の予定。指定した月の予測出金に上乗せされ、残高予測・最低残高に反映されます(実績月には影響しません)
+            </div>
+            {(assumptions.oneOffs || []).map((o, i) => {
+              const isPast = latestActual && o.month && o.month <= latestActual.month;
+              return (
+                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <input type="month" style={{ ...S.input, width: 150 }} value={o.month || ""}
+                    onChange={(e) => updateOneOff(i, "month", e.target.value)} />
+                  <input style={{ ...S.input, flex: 1, minWidth: 160 }} value={o.name} placeholder="内容(例:車検)"
+                    onChange={(e) => updateOneOff(i, "name", e.target.value)} />
+                  <input style={{ ...S.input, width: 120, textAlign: "right", fontVariantNumeric: "tabular-nums" }}
+                    type="number" step={10000} value={o.amount}
+                    onChange={(e) => updateOneOff(i, "amount", e.target.value)} />
+                  <button onClick={() => removeOneOff(i)}
+                    style={{ background: "none", border: "none", color: "#B23A48", cursor: "pointer", fontSize: 15, padding: "0 4px" }}
+                    aria-label="削除">×</button>
+                  {isPast && <span style={{ fontSize: 11, color: "#C13A55" }}>過去月のため予測に反映されません</span>}
+                </div>
+              );
+            })}
+            <button style={S.btnAdd} onClick={addOneOff}>+ 単発支出を追加</button>
           </div>
         </div>
       </div>
@@ -984,7 +985,14 @@ export default function CashflowDashboard() {
                     cursor: r.type === "actual" ? "pointer" : "default",
                     background: r.month === selected && r.type === "actual" ? "#F3F5FD" : "transparent",
                   }}>
-                  <td style={{ ...S.td, textAlign: "left", fontWeight: 700 }}>{monthLabel(r.month)}</td>
+                  <td style={{ ...S.td, textAlign: "left", fontWeight: 700 }}>
+                    {monthLabel(r.month)}
+                    {r.oneOffs?.length > 0 && (
+                      <div style={{ fontSize: 10, fontWeight: 600, color: "#B25E12", whiteSpace: "normal" }}>
+                        {r.oneOffs.map((o) => `${o.name || "単発"} ${yen(o.amount)}`).join(" / ")}
+                      </div>
+                    )}
+                  </td>
                   <td style={S.td}><span style={S.tag(r.type)}>{r.type === "actual" ? "実績" : "予測"}</span></td>
                   <td style={S.td}>{yen(r.startBalance)}</td>
                   <td style={{ ...S.td, color: "#0B7A50" }}>{yen(r.income)}</td>
@@ -1048,6 +1056,131 @@ export default function CashflowDashboard() {
           </div>
         </div>
       </div>
+
+      {/* 資産への移動(投資・自己口座) */}
+      {assetStats.perMonth.length > 0 && (
+        <div style={S.section}>
+          <div style={{ ...S.card, overflowX: "auto" }}>
+            <h2 style={S.h2}>資産への移動(楽天証券・ゆうちょ銀行)</h2>
+            <div style={{ fontSize: 12, color: "#3A4160", lineHeight: 1.8, marginBottom: 10 }}>
+              楽天証券への入金と、ご自身のゆうちょ銀行口座(ミキ トモヒロ宛振込)への移動は
+              <b>消費ではなく資産移動</b>として支出から分けて集計しています。
+              通帳ベースの入金・出金・残高はそのまま(銀行から出ていくお金として月次CFには含まれます)。
+              金額は移動額ベースで、証券口座の評価額(時価)ではありません。
+            </div>
+            <div style={{ maxHeight: 320, overflow: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 480 }}>
+              <thead>
+                <tr>
+                  <th style={{ ...S.th, textAlign: "left" }}>月</th>
+                  <th style={S.th}>資産へ(出金)</th>
+                  <th style={S.th}>資産から(入金)</th>
+                  <th style={S.th}>純移動</th>
+                </tr>
+              </thead>
+              <tbody>
+                {assetStats.perMonth.map((r) => (
+                  <tr key={r.month}>
+                    <td style={{ ...S.td, textAlign: "left", fontWeight: 700 }}>{monthLabel(r.month)}</td>
+                    <td style={{ ...S.td, color: "#0B7A50" }}>{r.out ? yen(r.out) : "—"}</td>
+                    <td style={{ ...S.td, color: "#6A7190" }}>{r.in ? yen(r.in) : "—"}</td>
+                    <td style={{ ...S.td, fontWeight: 700, color: r.net >= 0 ? "#0B7A50" : "#B25E12" }}>{yenSigned(r.net)}</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td style={{ ...S.td, textAlign: "left", fontWeight: 800, borderTop: "2px solid #E4E7F0" }}>累計</td>
+                  <td style={{ ...S.td, fontWeight: 800, borderTop: "2px solid #E4E7F0", color: "#0B7A50" }}>{yen(assetStats.totalOut)}</td>
+                  <td style={{ ...S.td, fontWeight: 800, borderTop: "2px solid #E4E7F0", color: "#6A7190" }}>{yen(assetStats.totalIn)}</td>
+                  <td style={{ ...S.td, fontWeight: 800, borderTop: "2px solid #E4E7F0", color: assetStats.net >= 0 ? "#0B7A50" : "#B25E12" }}>{yenSigned(assetStats.net)}</td>
+                </tr>
+              </tbody>
+            </table>
+            </div>
+            <div style={{ fontSize: 11, color: "#6A7190", marginTop: 8 }}>
+              内訳:{assetStats.totals.map((t) =>
+                `${t.name} 出 ${yen(t.out)} / 入 ${yen(t.in)}(純移動 ${yenSigned(t.out - t.in)})`).join("、")}
+            </div>
+
+            {/* サブ口座(ゆうちょ)の実残高推移 */}
+            {SUB_ACCOUNTS.map((acc) => {
+              const last = acc.months[acc.months.length - 1];
+              const txs = acc.months.flatMap((m) => m.transactions || []);
+              return (
+                <div key={acc.id} style={{ marginTop: 20, borderTop: "1px solid #E4E7F0", paddingTop: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#141A4E" }}>{acc.name} 残高推移(通帳より)</div>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#0B7A50" }}>
+                      最新残高 {yen(last?.endBalance)}({last ? monthLabel(last.month) : "—"}末)
+                    </div>
+                  </div>
+                  <div style={{ maxHeight: 280, overflow: "auto", marginTop: 8 }}>
+                    <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 480 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ ...S.th, textAlign: "left" }}>月</th>
+                          <th style={S.th}>月初残高</th>
+                          <th style={S.th}>入金</th>
+                          <th style={S.th}>出金</th>
+                          <th style={S.th}>月末残高</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {acc.months.map((m) => (
+                          <tr key={m.month}>
+                            <td style={{ ...S.td, textAlign: "left", fontWeight: 700 }}>{monthLabel(m.month)}</td>
+                            <td style={S.td}>{yen(m.startBalance)}</td>
+                            <td style={{ ...S.td, color: "#0B7A50" }}>{m.income ? yen(m.income) : "—"}</td>
+                            <td style={{ ...S.td, color: "#C13A55" }}>{m.expense ? yen(m.expense) : "—"}</td>
+                            <td style={{ ...S.td, fontWeight: 700 }}>{yen(m.endBalance)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {txs.length > 0 && (
+                    <div style={{ maxHeight: 240, overflow: "auto", marginTop: 8 }}>
+                      <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 480 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ ...S.th, textAlign: "left" }}>日付</th>
+                            <th style={{ ...S.th, textAlign: "left" }}>摘要</th>
+                            <th style={S.th}>金額</th>
+                            <th style={S.th}>残高</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {txs.map((t, i) => (
+                            <tr key={i}>
+                              <td style={{ ...S.td, textAlign: "left", color: "#6A7190", fontSize: 12 }}>{t.date}</td>
+                              <td style={{ ...S.td, textAlign: "left" }}>{t.name}</td>
+                              <td style={{ ...S.td, fontWeight: 700, color: t.amount < 0 ? "#C13A55" : "#0B7A50" }}>{yenSigned(t.amount)}</td>
+                              <td style={{ ...S.td, color: "#6A7190" }}>{yen(t.balance)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* 判明している資産の合計 */}
+            {latestActual && (
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#141A4E", marginTop: 14, background: "#F0F7F3", borderRadius: 8, padding: "10px 14px" }}>
+                判明している口座残高合計({monthLabel(latestActual.month)}末):
+                {yen((latestActual.endBalance ?? 0) + SUB_ACCOUNTS.reduce((s, a) => s + (a.months[a.months.length - 1]?.endBalance ?? 0), 0))}
+                <span style={{ fontWeight: 400, color: "#3A4160" }}>
+                  (三菱UFJ {yen(latestActual.endBalance)}
+                  {SUB_ACCOUNTS.map((a) => ` + ${a.name} ${yen(a.months[a.months.length - 1]?.endBalance)}`).join("")}
+                  。楽天証券の評価額は未反映)
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
