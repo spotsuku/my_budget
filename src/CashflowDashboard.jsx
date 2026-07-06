@@ -202,16 +202,11 @@ export default function CashflowDashboard() {
     return a[a.length - 1] || null;
   }, [rows]);
 
-  const minRow = useMemo(
-    () => rows.reduce((m, r) => (r.endBalance < (m?.endBalance ?? Infinity) ? r : m), null),
-    [rows]
-  );
-
-  // チャート用:みずほ残高に加え、現預金残高(+ゆうちょ)と総資産(現預金+投資移動累計)を系列化
-  const chartData = useMemo(() => {
+  // 全期間(実績+予測)の残高系列:現預金残高(みずほ+ゆうちょ)と資産残高(投資への純移動累計)
+  const balanceSeries = useMemo(() => {
     const investBudget = sum(investItems);
     let lastInvest = 0;
-    return displayRows.map((r) => {
+    return rows.map((r) => {
       const cash = r.endBalance != null ? r.endBalance + subBalanceAt(r.month) : null;
       let invest;
       if (r.type === "actual") {
@@ -221,16 +216,35 @@ export default function CashflowDashboard() {
         invest = lastInvest + investBudget; // 予測期間は投資予算ぶん毎月積み上がる想定
         lastInvest = invest;
       }
-      return {
-        name: monthLabel(r.month),
-        現預金残高: cash,
-        "資産残高(投資)": invest,
-        総資産: cash != null ? cash + invest : null,
-        月次CF: r.cf,
-        type: r.type,
-      };
+      return { month: r.month, type: r.type, cash, invest, cf: r.cf };
     });
-  }, [displayRows, investCumByMonth, investItems]);
+  }, [rows, investCumByMonth, investItems]);
+
+  // 期間(実績+予測)の現預金・資産の最低/最高。実績のみ表示トグルには影響されない
+  const balanceStats = useMemo(() => {
+    const withCash = balanceSeries.filter((s) => s.cash != null);
+    if (!withCash.length || !balanceSeries.length) return null;
+    return {
+      minCash: withCash.reduce((m, s) => (s.cash < m.cash ? s : m)),
+      maxCash: withCash.reduce((m, s) => (s.cash > m.cash ? s : m)),
+      minInvest: balanceSeries.reduce((m, s) => (s.invest < m.invest ? s : m)),
+      maxInvest: balanceSeries.reduce((m, s) => (s.invest > m.invest ? s : m)),
+    };
+  }, [balanceSeries]);
+
+  const chartData = useMemo(
+    () => balanceSeries
+      .filter((s) => showForecast || s.type === "actual")
+      .map((s) => ({
+        name: monthLabel(s.month),
+        現預金残高: s.cash,
+        "資産残高(投資)": s.invest,
+        総資産: s.cash != null ? s.cash + s.invest : null,
+        月次CF: s.cf,
+        type: s.type,
+      })),
+    [balanceSeries, showForecast]
+  );
 
   const selRow = rows.find((r) => r.month === selected && r.type === "actual");
 
@@ -601,13 +615,34 @@ export default function CashflowDashboard() {
           </div>
         </div>
         <div style={S.card}>
-          <div style={S.label}>予測期間の最低残高</div>
-          <div style={{ ...S.big, color: (minRow?.endBalance ?? 0) < 100000 ? "#C13A55" : "#141A33" }}>
-            {yen(minRow?.endBalance)}
+          <div style={S.label}>期間最低残高(実績+予測)</div>
+          <div style={{ ...S.big, fontSize: 24, color: (balanceStats?.minCash.cash ?? 0) < 100000 ? "#C13A55" : "#141A33" }}>
+            現預金 {yen(balanceStats?.minCash.cash)}
           </div>
           <div style={{ fontSize: 12.5, color: "#6A7190", marginTop: 4 }}>
-            {minRow ? monthLabel(minRow.month) + " 時点" : ""}
-            {minRow && minRow.endBalance < 0 && " ⚠ 資金ショート見込み"}
+            {balanceStats ? monthLabel(balanceStats.minCash.month) + " 時点" : ""}
+            {balanceStats && balanceStats.minCash.cash < 0 && " ⚠ 資金ショート見込み"}
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#6B4FA8", marginTop: 6 }}>
+            資産 {yen(balanceStats?.minInvest.invest)}
+            <span style={{ fontWeight: 400, color: "#6A7190" }}>
+              ({balanceStats ? monthLabel(balanceStats.minInvest.month) : "—"})
+            </span>
+          </div>
+        </div>
+        <div style={S.card}>
+          <div style={S.label}>期間最高残高(実績+予測)</div>
+          <div style={{ ...S.big, fontSize: 24, color: "#0E7A8A" }}>
+            現預金 {yen(balanceStats?.maxCash.cash)}
+          </div>
+          <div style={{ fontSize: 12.5, color: "#6A7190", marginTop: 4 }}>
+            {balanceStats ? monthLabel(balanceStats.maxCash.month) + " 時点" : ""}
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#6B4FA8", marginTop: 6 }}>
+            資産 {yen(balanceStats?.maxInvest.invest)}
+            <span style={{ fontWeight: 400, color: "#6A7190" }}>
+              ({balanceStats ? monthLabel(balanceStats.maxInvest.month) : "—"})
+            </span>
           </div>
         </div>
         <div style={S.card}>
