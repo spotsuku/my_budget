@@ -295,7 +295,7 @@ export const INITIAL_ASSUMPTIONS = {
 };
 
 // サブ口座:ゆうちょ銀行(ミキ トモヒロ 個人口座 ****581)。通帳スクショ(2026-02〜2026-06)より
-// 主口座(三菱UFJ)との資金移動の裏付けと、総資産の把握に使う。income/expense は取引の正負合計
+// 主口座(みずほ)との資金移動の裏付けと、総資産の把握に使う。income/expense は取引の正負合計
 export const SUB_ACCOUNTS = [
   {
     id: "yucho",
@@ -320,7 +320,7 @@ export const SUB_ACCOUNTS = [
         transactions: [
           { date: "03-03", name: "振込 コン フミカ(仕送り)", amount: -60000, balance: 440656 },
           { date: "03-03", name: "料金", amount: -165, balance: 440491 },
-          { date: "03-04", name: "振込 ミキ トモヒロ宛(三菱UFJへ)", amount: -350000, balance: 90491 },
+          { date: "03-04", name: "振込 ミキ トモヒロ宛(みずほへ)", amount: -350000, balance: 90491 },
           { date: "03-04", name: "料金", amount: -165, balance: 90326 },
         ],
       },
@@ -336,7 +336,7 @@ export const SUB_ACCOUNTS = [
         month: "2026-06", type: "actual", startBalance: 90419, endBalance: 90419,
         income: 150000, expense: 150000,
         transactions: [
-          { date: "06-10", name: "振込 ミキ トモヒロより(三菱UFJから)", amount: 60000, balance: 150419 },
+          { date: "06-10", name: "振込 ミキ トモヒロより(みずほから)", amount: 60000, balance: 150419 },
           { date: "06-11", name: "通帳(引出)", amount: -60000, balance: 90419 },
           { date: "06-11", name: "通帳(引出)", amount: -90000, balance: 419 },
           { date: "06-11", name: "通帳(預入)", amount: 90000, balance: 90419 },
