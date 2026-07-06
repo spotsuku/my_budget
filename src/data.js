@@ -277,10 +277,68 @@ export const INITIAL_VARIABLE = [
   { name: "手数料・雑費", amount: 5000 },
 ];
 
+// 資産(投資・自己口座への資金移動。銀行口座からは出金されるが消費ではないため支出とは別枠で管理)
+// match: 通帳の摘要・カテゴリ名とのマッチングに使う文字列(表示名と摘要が異なる場合に指定)
+export const INITIAL_ASSET = [
+  { name: "楽天証券", amount: 25000 },
+  { name: "ゆうちょ銀行(ミキ トモヒロ)", amount: 0, match: "ミキ トモヒロ" },
+];
+
 export const INITIAL_ASSUMPTIONS = {
   income: 560000,
   fixedCosts: INITIAL_FIXED,
   variableBudgets: INITIAL_VARIABLE,
+  assetBudgets: INITIAL_ASSET,
 };
+
+// サブ口座:ゆうちょ銀行(ミキ トモヒロ 個人口座 ****581)。通帳スクショ(2026-02〜2026-06)より
+// 主口座(三菱UFJ)との資金移動の裏付けと、総資産の把握に使う。income/expense は取引の正負合計
+export const SUB_ACCOUNTS = [
+  {
+    id: "yucho",
+    name: "ゆうちょ銀行(****581)",
+    months: [
+      {
+        month: "2026-02", type: "actual", startBalance: 986, endBalance: 500656,
+        income: 600000, expense: 100330,
+        transactions: [
+          { date: "02-11", name: "振込 ミキ トモヒロより(入金元 要確認)", amount: 600000, balance: 600986 },
+          { date: "02-20", name: "振込 ミキ トモヒロ宛", amount: -50000, balance: 550986 },
+          { date: "02-20", name: "料金", amount: -165, balance: 550821 },
+          { date: "02-21", name: "振込 ミキ トモヒロ宛", amount: -50000, balance: 500821 },
+          { date: "02-21", name: "料金", amount: -165, balance: 500656 },
+        ],
+      },
+      {
+        month: "2026-03", type: "actual", startBalance: 500656, endBalance: 90326,
+        income: 0, expense: 410330,
+        transactions: [
+          { date: "03-03", name: "振込 コン フミカ(仕送り)", amount: -60000, balance: 440656 },
+          { date: "03-03", name: "料金", amount: -165, balance: 440491 },
+          { date: "03-04", name: "振込 ミキ トモヒロ宛(三菱UFJへ)", amount: -350000, balance: 90491 },
+          { date: "03-04", name: "料金", amount: -165, balance: 90326 },
+        ],
+      },
+      {
+        month: "2026-04", type: "actual", startBalance: 90326, endBalance: 90419,
+        income: 93, expense: 0,
+        transactions: [
+          { date: "04-01", name: "受取利子", amount: 93, balance: 90419 },
+        ],
+      },
+      { month: "2026-05", type: "actual", startBalance: 90419, endBalance: 90419, income: 0, expense: 0, transactions: [] },
+      {
+        month: "2026-06", type: "actual", startBalance: 90419, endBalance: 90419,
+        income: 150000, expense: 150000,
+        transactions: [
+          { date: "06-10", name: "振込 ミキ トモヒロより(三菱UFJから)", amount: 60000, balance: 150419 },
+          { date: "06-11", name: "通帳(引出)", amount: -60000, balance: 90419 },
+          { date: "06-11", name: "通帳(引出)", amount: -90000, balance: 419 },
+          { date: "06-11", name: "通帳(預入)", amount: 90000, balance: 90419 },
+        ],
+      },
+    ],
+  },
+];
 
 export const STORAGE_KEY = "cashflow-dashboard-v1";

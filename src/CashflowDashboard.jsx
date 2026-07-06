@@ -3,7 +3,7 @@ import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ReferenceLine, ResponsiveContainer, Cell, Legend,
 } from "recharts";
-import { INITIAL_MONTHS, INITIAL_ASSUMPTIONS, STORAGE_KEY } from "./data.js";
+import { INITIAL_MONTHS, INITIAL_ASSUMPTIONS, SUB_ACCOUNTS, STORAGE_KEY } from "./data.js";
 import {
   yen, yenSigned, monthLabel, addMonth, sum, nameMatch,
   toCsv, toTsv, downloadFile, copyToClipboard,
@@ -42,7 +42,11 @@ export default function CashflowDashboard() {
         }
         if (d.assumptions) {
           if (d.assumptions.fixedCosts) {
-            setAssumptions(d.assumptions);
+            // 資産リスト導入前の保存データには assetBudgets がないので初期値を補う
+            setAssumptions({
+              ...d.assumptions,
+              assetBudgets: d.assumptions.assetBudgets ?? INITIAL_ASSUMPTIONS.assetBudgets,
+            });
           } else {
             setAssumptions({ ...INITIAL_ASSUMPTIONS, income: d.assumptions.income ?? 560000 });
           }
@@ -66,11 +70,55 @@ export default function CashflowDashboard() {
 
   const fixedTotal = useMemo(() => sum(assumptions.fixedCosts), [assumptions]);
   const varTotal = useMemo(() => sum(assumptions.variableBudgets), [assumptions]);
-  const budgetExpense = fixedTotal + varTotal;
+  const assetTotal = useMemo(() => sum(assumptions.assetBudgets || []), [assumptions]);
+  // budgetExpense は銀行からの出金合計(資産への移動を含む)。銀行残高の予測はこちらで行う
+  const budgetExpense = fixedTotal + varTotal + assetTotal;
   const budgetCF = assumptions.income - budgetExpense;
+  // 資産移動を除いた「消費ベース」のCF(家計として黒字かどうかはこちらで判断)
+  const consumptionCF = assumptions.income - fixedTotal - varTotal;
 
-  // 全実績データの整合性チェック(取込・削除のたびに再計算)
-  const validationWarnings = useMemo(() => validateMonths(months), [months]);
+  // 資産項目(楽天証券・自己口座など)。match があれば摘要とのマッチングに使う
+  const assetItems = useMemo(
+    () => (assumptions.assetBudgets || []).filter((b) => b.name),
+    [assumptions]
+  );
+  const assetOutOf = (m) => {
+    let s = 0;
+    for (const [cn, cv] of Object.entries(m?.categories || {}))
+      if (assetItems.some((b) => nameMatch(b.match || b.name, cn))) s += cv;
+    return s;
+  };
+
+  // 資産への移動の月次集計(出金=資産へ / 入金=資産から戻り)。通帳ベースの入出金は変更しない
+  const assetStats = useMemo(() => {
+    const sorted = [...months].sort((a, b) => a.month.localeCompare(b.month));
+    const totals = assetItems.map((b) => ({ name: b.name, out: 0, in: 0 }));
+    const perMonth = [];
+    for (const m of sorted) {
+      let out = 0, inn = 0;
+      assetItems.forEach((b, i) => {
+        const key = b.match || b.name;
+        let o = 0, v = 0;
+        for (const [cn, cv] of Object.entries(m.categories || {})) if (nameMatch(key, cn)) o += cv;
+        for (const [dn, dv] of Object.entries(m.incomeDetail || {})) if (nameMatch(key, dn)) v += dv;
+        totals[i].out += o; totals[i].in += v;
+        out += o; inn += v;
+      });
+      if (out || inn) perMonth.push({ month: m.month, out, in: inn, net: out - inn });
+    }
+    const totalOut = totals.reduce((s, t) => s + t.out, 0);
+    const totalIn = totals.reduce((s, t) => s + t.in, 0);
+    return { perMonth, totals, totalOut, totalIn, net: totalOut - totalIn };
+  }, [months, assetItems]);
+
+  // 全実績データの整合性チェック(取込・削除のたびに再計算)。サブ口座(ゆうちょ)も同じルールで検証
+  const validationWarnings = useMemo(() => {
+    const main = validateMonths(months);
+    const sub = SUB_ACCOUNTS.flatMap((acc) =>
+      validateMonths(acc.months).map((w) => ({ ...w, text: `[${acc.name}] ${w.text}` }))
+    );
+    return [...main, ...sub];
+  }, [months]);
 
   // 実績+12ヶ月予測を合成
   const rows = useMemo(() => {
@@ -127,11 +175,12 @@ export default function CashflowDashboard() {
     const cats = Object.entries(selRow.categories);
     const used = new Set();
     const items = [...assumptions.fixedCosts.map((b) => ({ ...b, kind: "固定" })),
-                   ...assumptions.variableBudgets.map((b) => ({ ...b, kind: "変動" }))]
+                   ...assumptions.variableBudgets.map((b) => ({ ...b, kind: "変動" })),
+                   ...(assumptions.assetBudgets || []).map((b) => ({ ...b, kind: "資産" }))]
       .map((b) => {
         let actual = 0;
         for (const [cn, cv] of cats) {
-          if (!used.has(cn) && nameMatch(b.name, cn)) { actual += cv; used.add(cn); }
+          if (!used.has(cn) && nameMatch(b.match || b.name, cn)) { actual += cv; used.add(cn); }
         }
         return { ...b, actual, diff: actual - Number(b.amount || 0) };
       });
@@ -146,6 +195,7 @@ export default function CashflowDashboard() {
     const items = [
       ...assumptions.fixedCosts.map((b) => ({ ...b, kind: "固定", values: {} })),
       ...assumptions.variableBudgets.map((b) => ({ ...b, kind: "変動", values: {} })),
+      ...(assumptions.assetBudgets || []).map((b) => ({ ...b, kind: "資産", values: {} })),
     ];
     const extraMap = new Map();
     for (const m of actuals) {
@@ -154,7 +204,7 @@ export default function CashflowDashboard() {
       for (const row of items) {
         let v = 0;
         for (const [cn, cv] of cats) {
-          if (!used.has(cn) && nameMatch(row.name, cn)) { v += cv; used.add(cn); }
+          if (!used.has(cn) && nameMatch(row.match || row.name, cn)) { v += cv; used.add(cn); }
         }
         if (v) row.values[m.month] = v;
       }
@@ -273,6 +323,8 @@ export default function CashflowDashboard() {
         ...matrix.actuals.map((m) => b.values[m.month] ?? ""),
       ]),
       ["出金合計", "", budgetExpense, ...matrix.actuals.map((m) => m.expense ?? "")],
+      ["うち資産へ", "", assetTotal, ...matrix.actuals.map((m) => assetOutOf(m) || "")],
+      ["消費支出(資産移動除く)", "", fixedTotal + varTotal, ...matrix.actuals.map((m) => (m.expense ?? 0) - assetOutOf(m))],
       ["入金", "", assumptions.income, ...matrix.actuals.map((m) => m.income ?? "")],
       ["月次CF", "", budgetCF, ...matrix.actuals.map((m) => m.cf ?? "")],
       ["月末残高", "", "", ...matrix.actuals.map((m) => m.endBalance ?? "")],
@@ -295,8 +347,8 @@ export default function CashflowDashboard() {
   // 予算リスト編集
   const updateBudget = (kind, idx, field, value) => {
     setAssumptions((a) => {
-      const key = kind === "fixed" ? "fixedCosts" : "variableBudgets";
-      const list = a[key].map((x, i) =>
+      const key = kind === "fixed" ? "fixedCosts" : kind === "asset" ? "assetBudgets" : "variableBudgets";
+      const list = (a[key] || []).map((x, i) =>
         i === idx ? { ...x, [field]: field === "amount" ? Number(value) || 0 : value } : x
       );
       return { ...a, [key]: list };
@@ -304,14 +356,14 @@ export default function CashflowDashboard() {
   };
   const addBudget = (kind) => {
     setAssumptions((a) => {
-      const key = kind === "fixed" ? "fixedCosts" : "variableBudgets";
-      return { ...a, [key]: [...a[key], { name: "", amount: 0 }] };
+      const key = kind === "fixed" ? "fixedCosts" : kind === "asset" ? "assetBudgets" : "variableBudgets";
+      return { ...a, [key]: [...(a[key] || []), { name: "", amount: 0 }] };
     });
   };
   const removeBudget = (kind, idx) => {
     setAssumptions((a) => {
-      const key = kind === "fixed" ? "fixedCosts" : "variableBudgets";
-      return { ...a, [key]: a[key].filter((_, i) => i !== idx) };
+      const key = kind === "fixed" ? "fixedCosts" : kind === "asset" ? "assetBudgets" : "variableBudgets";
+      return { ...a, [key]: (a[key] || []).filter((_, i) => i !== idx) };
     });
   };
 
@@ -347,13 +399,17 @@ export default function CashflowDashboard() {
     }),
     kindTag: (k) => ({
       display: "inline-block", fontSize: 10, fontWeight: 700, padding: "2px 8px",
-      borderRadius: 999, background: k === "固定" ? "#E8ECFB" : "#FFF1E4",
-      color: k === "固定" ? "#2F3DA8" : "#B25E12",
+      borderRadius: 999,
+      background: k === "固定" ? "#E8ECFB" : k === "資産" ? "#E2F5EC" : "#FFF1E4",
+      color: k === "固定" ? "#2F3DA8" : k === "資産" ? "#0B7A50" : "#B25E12",
     }),
     th: {
       textAlign: "right", padding: "8px 10px", fontSize: 11, color: "#6A7190",
       borderBottom: "1px solid #E4E7F0", whiteSpace: "nowrap",
+      // 縦スクロール時にヘッダー行を固定(各表はスクロールコンテナで包む)
+      position: "sticky", top: 0, background: "#fff", zIndex: 2,
     },
+    scrollY: { maxHeight: 440, overflow: "auto" },
     td: {
       textAlign: "right", padding: "9px 10px", fontSize: 13,
       borderBottom: "1px solid #F0F2F8", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap",
@@ -447,12 +503,17 @@ export default function CashflowDashboard() {
           <div style={{ fontSize: 11, color: "#6A7190", marginTop: 4 }}>
             入金 {yen(latestActual?.income)} / 出金 {yen(latestActual?.expense)}
           </div>
+          {latestActual && assetOutOf(latestActual) > 0 && (
+            <div style={{ fontSize: 11, color: "#0B7A50", marginTop: 2 }}>
+              出金のうち資産へ {yen(assetOutOf(latestActual))}(消費は {yen((latestActual.expense ?? 0) - assetOutOf(latestActual))})
+            </div>
+          )}
         </div>
         <div style={S.card}>
           <div style={S.label}>予算ベースの月次CF</div>
           <div style={{ ...S.big, color: budgetCF < 0 ? "#C13A55" : "#0B7A50" }}>{yenSigned(budgetCF)}</div>
           <div style={{ fontSize: 11, color: "#6A7190", marginTop: 4 }}>
-            固定 {yen(fixedTotal)} + 変動 {yen(varTotal)}
+            固定 {yen(fixedTotal)} + 変動 {yen(varTotal)} + 資産へ {yen(assetTotal)}
           </div>
         </div>
         <div style={S.card}>
@@ -463,6 +524,13 @@ export default function CashflowDashboard() {
           <div style={{ fontSize: 11, color: "#6A7190", marginTop: 4 }}>
             {minRow ? monthLabel(minRow.month) + " 時点" : ""}
             {minRow && minRow.endBalance < 0 && " ⚠ 資金ショート見込み"}
+          </div>
+        </div>
+        <div style={S.card}>
+          <div style={S.label}>資産への移動(累計)</div>
+          <div style={{ ...S.big, fontSize: 20, color: "#0B7A50" }}>{yen(assetStats.totalOut)}</div>
+          <div style={{ fontSize: 11, color: "#6A7190", marginTop: 4 }}>
+            資産から {yen(assetStats.totalIn)} / 純移動 {yenSigned(assetStats.net)}
           </div>
         </div>
       </div>
@@ -524,6 +592,130 @@ export default function CashflowDashboard() {
         </div>
       </div>
 
+      {/* 資産への移動(投資・自己口座) */}
+      {assetStats.perMonth.length > 0 && (
+        <div style={S.section}>
+          <div style={{ ...S.card, overflowX: "auto" }}>
+            <h2 style={S.h2}>資産への移動(楽天証券・ゆうちょ銀行)</h2>
+            <div style={{ fontSize: 12, color: "#3A4160", lineHeight: 1.8, marginBottom: 10 }}>
+              楽天証券への入金と、ご自身のゆうちょ銀行口座(ミキ トモヒロ宛振込)への移動は
+              <b>消費ではなく資産移動</b>として支出から分けて集計しています。
+              通帳ベースの入金・出金・残高はそのまま(銀行から出ていくお金として月次CFには含まれます)。
+              金額は移動額ベースで、証券口座の評価額(時価)ではありません。
+            </div>
+            <div style={{ maxHeight: 320, overflow: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 480 }}>
+              <thead>
+                <tr>
+                  <th style={{ ...S.th, textAlign: "left" }}>月</th>
+                  <th style={S.th}>資産へ(出金)</th>
+                  <th style={S.th}>資産から(入金)</th>
+                  <th style={S.th}>純移動</th>
+                </tr>
+              </thead>
+              <tbody>
+                {assetStats.perMonth.map((r) => (
+                  <tr key={r.month}>
+                    <td style={{ ...S.td, textAlign: "left", fontWeight: 700 }}>{monthLabel(r.month)}</td>
+                    <td style={{ ...S.td, color: "#0B7A50" }}>{r.out ? yen(r.out) : "—"}</td>
+                    <td style={{ ...S.td, color: "#6A7190" }}>{r.in ? yen(r.in) : "—"}</td>
+                    <td style={{ ...S.td, fontWeight: 700, color: r.net >= 0 ? "#0B7A50" : "#B25E12" }}>{yenSigned(r.net)}</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td style={{ ...S.td, textAlign: "left", fontWeight: 800, borderTop: "2px solid #E4E7F0" }}>累計</td>
+                  <td style={{ ...S.td, fontWeight: 800, borderTop: "2px solid #E4E7F0", color: "#0B7A50" }}>{yen(assetStats.totalOut)}</td>
+                  <td style={{ ...S.td, fontWeight: 800, borderTop: "2px solid #E4E7F0", color: "#6A7190" }}>{yen(assetStats.totalIn)}</td>
+                  <td style={{ ...S.td, fontWeight: 800, borderTop: "2px solid #E4E7F0", color: assetStats.net >= 0 ? "#0B7A50" : "#B25E12" }}>{yenSigned(assetStats.net)}</td>
+                </tr>
+              </tbody>
+            </table>
+            </div>
+            <div style={{ fontSize: 11, color: "#6A7190", marginTop: 8 }}>
+              内訳:{assetStats.totals.map((t) =>
+                `${t.name} 出 ${yen(t.out)} / 入 ${yen(t.in)}(純移動 ${yenSigned(t.out - t.in)})`).join("、")}
+            </div>
+
+            {/* サブ口座(ゆうちょ)の実残高推移 */}
+            {SUB_ACCOUNTS.map((acc) => {
+              const last = acc.months[acc.months.length - 1];
+              const txs = acc.months.flatMap((m) => m.transactions || []);
+              return (
+                <div key={acc.id} style={{ marginTop: 20, borderTop: "1px solid #E4E7F0", paddingTop: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#141A4E" }}>{acc.name} 残高推移(通帳より)</div>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#0B7A50" }}>
+                      最新残高 {yen(last?.endBalance)}({last ? monthLabel(last.month) : "—"}末)
+                    </div>
+                  </div>
+                  <div style={{ maxHeight: 280, overflow: "auto", marginTop: 8 }}>
+                    <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 480 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ ...S.th, textAlign: "left" }}>月</th>
+                          <th style={S.th}>月初残高</th>
+                          <th style={S.th}>入金</th>
+                          <th style={S.th}>出金</th>
+                          <th style={S.th}>月末残高</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {acc.months.map((m) => (
+                          <tr key={m.month}>
+                            <td style={{ ...S.td, textAlign: "left", fontWeight: 700 }}>{monthLabel(m.month)}</td>
+                            <td style={S.td}>{yen(m.startBalance)}</td>
+                            <td style={{ ...S.td, color: "#0B7A50" }}>{m.income ? yen(m.income) : "—"}</td>
+                            <td style={{ ...S.td, color: "#C13A55" }}>{m.expense ? yen(m.expense) : "—"}</td>
+                            <td style={{ ...S.td, fontWeight: 700 }}>{yen(m.endBalance)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {txs.length > 0 && (
+                    <div style={{ maxHeight: 240, overflow: "auto", marginTop: 8 }}>
+                      <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 480 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ ...S.th, textAlign: "left" }}>日付</th>
+                            <th style={{ ...S.th, textAlign: "left" }}>摘要</th>
+                            <th style={S.th}>金額</th>
+                            <th style={S.th}>残高</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {txs.map((t, i) => (
+                            <tr key={i}>
+                              <td style={{ ...S.td, textAlign: "left", color: "#6A7190", fontSize: 12 }}>{t.date}</td>
+                              <td style={{ ...S.td, textAlign: "left" }}>{t.name}</td>
+                              <td style={{ ...S.td, fontWeight: 700, color: t.amount < 0 ? "#C13A55" : "#0B7A50" }}>{yenSigned(t.amount)}</td>
+                              <td style={{ ...S.td, color: "#6A7190" }}>{yen(t.balance)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* 判明している資産の合計 */}
+            {latestActual && (
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#141A4E", marginTop: 14, background: "#F0F7F3", borderRadius: 8, padding: "10px 14px" }}>
+                判明している口座残高合計({monthLabel(latestActual.month)}末):
+                {yen((latestActual.endBalance ?? 0) + SUB_ACCOUNTS.reduce((s, a) => s + (a.months[a.months.length - 1]?.endBalance ?? 0), 0))}
+                <span style={{ fontWeight: 400, color: "#3A4160" }}>
+                  (三菱UFJ {yen(latestActual.endBalance)}
+                  {SUB_ACCOUNTS.map((a) => ` + ${a.name} ${yen(a.months[a.months.length - 1]?.endBalance)}`).join("")}
+                  。楽天証券の評価額は未反映)
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* 予算設定 */}
       <div style={S.section}>
         <div style={S.card}>
@@ -536,14 +728,17 @@ export default function CashflowDashboard() {
                 onChange={(e) => setAssumptions((a) => ({ ...a, income: Number(e.target.value) || 0 }))} />
             </div>
             <div style={{ fontSize: 13, lineHeight: 1.9 }}>
-              支出予算合計:<b>{yen(budgetExpense)}</b>(固定 {yen(fixedTotal)} / 変動 {yen(varTotal)})<br />
-              予算どおりなら月次CF:<b style={{ color: budgetCF < 0 ? "#C13A55" : "#0B7A50" }}>{yenSigned(budgetCF)}</b>
-              {budgetCF < 0 && <span style={{ color: "#C13A55", fontSize: 12 }}> ← 予算段階で赤字です。変動費の見直しを</span>}
+              出金予算合計:<b>{yen(budgetExpense)}</b>(固定 {yen(fixedTotal)} / 変動 {yen(varTotal)} / 資産へ {yen(assetTotal)})<br />
+              予算どおりなら銀行残高の月次CF:<b style={{ color: budgetCF < 0 ? "#C13A55" : "#0B7A50" }}>{yenSigned(budgetCF)}</b>
+              <span style={{ fontSize: 12, color: "#6A7190" }}>(資産移動を除く消費ベース:
+                <b style={{ color: consumptionCF < 0 ? "#C13A55" : "#0B7A50" }}>{yenSigned(consumptionCF)}</b>)</span>
+              {consumptionCF < 0 && <span style={{ color: "#C13A55", fontSize: 12 }}> ← 予算段階で赤字です。変動費の見直しを</span>}
             </div>
           </div>
           <div style={{ display: "flex", gap: 32, flexWrap: "wrap" }}>
             <BudgetList kind="fixed" title="固定費" list={assumptions.fixedCosts} total={fixedTotal} accent="#2F3DA8" />
             <BudgetList kind="variable" title="変動費(予算)" list={assumptions.variableBudgets} total={varTotal} accent="#B25E12" />
+            <BudgetList kind="asset" title="資産へ(投資・自己口座)" list={assumptions.assetBudgets || []} total={assetTotal} accent="#0B7A50" />
           </div>
         </div>
       </div>
@@ -553,6 +748,7 @@ export default function CashflowDashboard() {
         <div style={S.section}>
           <div style={{ ...S.card, overflowX: "auto" }}>
             <h2 style={S.h2}>{monthLabel(selRow.month)} 予算 vs 実績(下の表で実績行をクリックすると切替)</h2>
+            <div style={S.scrollY}>
             <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 560 }}>
               <thead>
                 <tr>
@@ -596,6 +792,7 @@ export default function CashflowDashboard() {
                 </tr>
               </tbody>
             </table>
+            </div>
           </div>
         </div>
       )}
@@ -612,10 +809,11 @@ export default function CashflowDashboard() {
                 <button style={S.btnLight} onClick={downloadMatrixCsv}>CSVダウンロード</button>
               </div>
             </div>
-            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 520 + matrix.actuals.length * 110, marginTop: 12 }}>
+            <div style={{ ...S.scrollY, marginTop: 12 }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 520 + matrix.actuals.length * 110 }}>
               <thead>
                 <tr>
-                  <th style={{ ...S.th, textAlign: "left", position: "sticky", left: 0, background: "#fff", zIndex: 1 }}>項目</th>
+                  <th style={{ ...S.th, textAlign: "left", position: "sticky", left: 0, background: "#fff", zIndex: 3 }}>項目</th>
                   <th style={S.th}>区分</th>
                   <th style={S.th}>予算</th>
                   {matrix.actuals.map((m) => (
@@ -666,6 +864,22 @@ export default function CashflowDashboard() {
                   ))}
                 </tr>
                 <tr>
+                  <td style={{ ...S.td, textAlign: "left", position: "sticky", left: 0, background: "#fff", color: "#0B7A50" }}>うち資産へ</td>
+                  <td style={S.td}></td>
+                  <td style={{ ...S.td, color: "#0B7A50" }}>{yen(assetTotal)}</td>
+                  {matrix.actuals.map((m) => (
+                    <td key={m.month} style={{ ...S.td, color: "#0B7A50" }}>{assetOutOf(m) ? yen(assetOutOf(m)) : "—"}</td>
+                  ))}
+                </tr>
+                <tr>
+                  <td style={{ ...S.td, textAlign: "left", position: "sticky", left: 0, background: "#fff" }}>消費支出(資産移動除く)</td>
+                  <td style={S.td}></td>
+                  <td style={S.td}>{yen(fixedTotal + varTotal)}</td>
+                  {matrix.actuals.map((m) => (
+                    <td key={m.month} style={S.td}>{yen((m.expense ?? 0) - assetOutOf(m))}</td>
+                  ))}
+                </tr>
+                <tr>
                   <td style={{ ...S.td, textAlign: "left", fontWeight: 800, position: "sticky", left: 0, background: "#fff" }}>入金</td>
                   <td style={S.td}></td>
                   <td style={{ ...S.td, fontWeight: 800 }}>{yen(assumptions.income)}</td>
@@ -691,6 +905,7 @@ export default function CashflowDashboard() {
                 </tr>
               </tbody>
             </table>
+            </div>
             <div style={{ fontSize: 11, color: "#6A7190", marginTop: 8 }}>
               毎月データを取り込むと右に列が増えていきます。赤いセル = 予算超過
             </div>
@@ -747,7 +962,8 @@ export default function CashflowDashboard() {
               実績のみ表示
             </label>
           </div>
-          <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 640, marginTop: 12 }}>
+          <div style={{ ...S.scrollY, marginTop: 12 }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 640 }}>
             <thead>
               <tr>
                 <th style={{ ...S.th, textAlign: "left" }}>月</th>
@@ -785,6 +1001,7 @@ export default function CashflowDashboard() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
 
