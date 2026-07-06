@@ -678,15 +678,14 @@ export default function CashflowDashboard() {
                     return <circle key={p.index} cx={p.cx} cy={p.cy} r={3.2}
                       fill={f ? "#fff" : "#0E7A8A"} stroke="#0E7A8A" strokeWidth={1.6} />;
                   }} />
-                {/* ツールチップ表示専用の系列(線は描画しない) */}
-                <Line dataKey="資産残高(投資)" stroke="#6B4FA8" strokeWidth={0} dot={false} activeDot={false} legendType="none" />
+                <Line dataKey="資産残高(投資)" stroke="#6B4FA8" strokeWidth={2} strokeDasharray="2 4" dot={false} />
                 <Line dataKey="総資産" stroke="#0B7A50" strokeWidth={2} strokeDasharray="6 3" dot={false} />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
           <div style={{ fontSize: 12.5, color: "#6A7190", padding: "4px 0 10px 20px" }}>
             ○ 白抜きの点・薄い棒 = 予測(予算合計から計算)/ 赤点線 = 残高ゼロライン<br />
-            現預金残高 = みずほ + ゆうちょ / 総資産(緑破線)= 現預金 + 投資への純移動累計(評価額ではなく移動額ベース)。みずほ単体の残高は下の月次資金繰り表を参照
+            現預金残高 = みずほ + ゆうちょ / 資産残高(紫点線)= 投資への純移動累計(評価額ではなく移動額ベース)/ 総資産(緑破線)= 現預金 + 資産残高。みずほ単体の残高は下の月次資金繰り表を参照
           </div>
         </div>
       </div>
