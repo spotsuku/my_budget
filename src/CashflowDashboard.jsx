@@ -257,7 +257,7 @@ export default function CashflowDashboard() {
     return [...main, ...sub];
   }, [months]);
 
-  // 実績+12ヶ月予測を合成。予測月には登録済みの単発支出を上乗せする
+  // 実績+12ヶ月予測を合成。予測月には登録済みの単発収支(支出/収入)を上乗せする
   const rows = useMemo(() => {
     const sorted = [...months].sort((a, b) => a.month.localeCompare(b.month));
     const out = sorted.map((m) => ({
@@ -277,13 +277,17 @@ export default function CashflowDashboard() {
     for (let i = 1; i <= 12; i++) {
       cur = addMonth(cur, 1);
       const oneOffs = oneOffsByMonth.get(cur) || [];
-      const extra = oneOffs.reduce((s, o) => s + (Number(o.amount) || 0), 0);
+      const extraExpense = oneOffs.filter((o) => o.type !== "income")
+        .reduce((s, o) => s + (Number(o.amount) || 0), 0);
+      const extraIncome = oneOffs.filter((o) => o.type === "income")
+        .reduce((s, o) => s + (Number(o.amount) || 0), 0);
+      const cf = budgetCF + extraIncome - extraExpense;
       const start = bal;
-      bal = start + budgetCF - extra;
+      bal = start + cf;
       out.push({
         month: cur, type: "forecast",
         startBalance: start, endBalance: bal,
-        income: assumptions.income, expense: budgetExpense + extra, cf: budgetCF - extra,
+        income: assumptions.income + extraIncome, expense: budgetExpense + extraExpense, cf,
         oneOffs,
       });
     }
@@ -558,7 +562,7 @@ export default function CashflowDashboard() {
   const addOneOff = () => {
     setAssumptions((a) => ({
       ...a,
-      oneOffs: [...(a.oneOffs || []), { month: addMonth(latestActual?.month || "2026-06", 1), name: "", amount: 0 }],
+      oneOffs: [...(a.oneOffs || []), { month: addMonth(latestActual?.month || "2026-06", 1), type: "expense", name: "", amount: 0 }],
     }));
   };
   const removeOneOff = (idx) => {
@@ -756,19 +760,27 @@ export default function CashflowDashboard() {
               onUpdate={updateBudget} onAdd={addBudget} onRemove={removeBudget} />
           </div>
 
-          {/* 単発支出(予定) */}
+          {/* 単発収支(予定) */}
           <div style={{ marginTop: 24, borderTop: "1px solid #E4E7F0", paddingTop: 14 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#141A4E", marginBottom: 4 }}>単発支出(予定)</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#141A4E", marginBottom: 4 }}>単発収支(予定)</div>
             <div style={{ fontSize: 13, color: "#6A7190", marginBottom: 10 }}>
-              車検・旅行・家電の買い替えなど、毎月ではない支出の予定。指定した月の予測出金に上乗せされ、残高予測・最低残高に反映されます(実績月には影響しません)
+              車検・旅行などの単発の支出や、賞与・保険金などの単発の収入の予定。指定した月の予測に上乗せされ、残高予測・最低残高に反映されます(実績月には影響しません)
             </div>
             {(assumptions.oneOffs || []).map((o, i) => {
               const isPast = latestActual && o.month && o.month <= latestActual.month;
+              const isIncome = o.type === "income";
               return (
                 <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center", flexWrap: "wrap" }}>
                   <input type="month" style={{ ...S.input, width: 150 }} value={o.month || ""}
                     onChange={(e) => updateOneOff(i, "month", e.target.value)} />
-                  <input style={{ ...S.input, flex: 1, minWidth: 160 }} value={o.name} placeholder="内容(例:車検)"
+                  <select value={isIncome ? "income" : "expense"}
+                    onChange={(e) => updateOneOff(i, "type", e.target.value)}
+                    style={{ ...S.input, width: 84, color: isIncome ? "#0B7A50" : "#B25E12", fontWeight: 700 }}>
+                    <option value="expense">支出</option>
+                    <option value="income">収入</option>
+                  </select>
+                  <input style={{ ...S.input, flex: 1, minWidth: 160 }} value={o.name}
+                    placeholder={isIncome ? "内容(例:賞与)" : "内容(例:車検)"}
                     onChange={(e) => updateOneOff(i, "name", e.target.value)} />
                   <input style={{ ...S.input, width: 120, textAlign: "right", fontVariantNumeric: "tabular-nums" }}
                     type="number" step={10000} value={o.amount}
@@ -780,7 +792,7 @@ export default function CashflowDashboard() {
                 </div>
               );
             })}
-            <button style={S.btnAdd} onClick={addOneOff}>+ 単発支出を追加</button>
+            <button style={S.btnAdd} onClick={addOneOff}>+ 単発収支を追加</button>
           </div>
         </div>
       </div>
@@ -1029,8 +1041,13 @@ export default function CashflowDashboard() {
                   <td style={{ ...S.td, textAlign: "left", fontWeight: 700 }}>
                     {monthLabel(r.month)}
                     {r.oneOffs?.length > 0 && (
-                      <div style={{ fontSize: 11.5, fontWeight: 600, color: "#B25E12", whiteSpace: "normal" }}>
-                        {r.oneOffs.map((o) => `${o.name || "単発"} ${yen(o.amount)}`).join(" / ")}
+                      <div style={{ fontSize: 11.5, fontWeight: 600, whiteSpace: "normal" }}>
+                        {r.oneOffs.map((o, oi) => (
+                          <span key={oi} style={{ color: o.type === "income" ? "#0B7A50" : "#B25E12" }}>
+                            {oi > 0 && " / "}
+                            {(o.name || "単発") + " " + (o.type === "income" ? "+" : "-") + yen(o.amount).slice(1)}
+                          </span>
+                        ))}
                       </div>
                     )}
                   </td>

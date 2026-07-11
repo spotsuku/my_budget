@@ -449,8 +449,8 @@ export const INITIAL_ASSUMPTIONS = {
   fixedCosts: INITIAL_FIXED,
   variableBudgets: INITIAL_VARIABLE,
   assetBudgets: INITIAL_ASSET,
-  // 今後予定している単発支出。該当月の予測出金に上乗せされる
-  // 例: { month: "2026-09", name: "車検", amount: 120000 }
+  // 今後予定している単発の収支。type: "expense"(支出・省略時)/ "income"(収入)
+  // 該当月の予測に上乗せされる。例: { month: "2026-09", type: "expense", name: "車検", amount: 120000 }
   oneOffs: [],
 };
 
