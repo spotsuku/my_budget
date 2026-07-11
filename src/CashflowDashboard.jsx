@@ -10,6 +10,105 @@ import {
 } from "./utils.js";
 import { validateMonths } from "./validate.js";
 
+// ---------- スタイル ----------
+const S = {
+  page: {
+    minHeight: "100vh", background: "#EEF0F6", color: "#141A33",
+    fontFamily: "'Hiragino Sans','Yu Gothic UI','Noto Sans JP',sans-serif",
+    padding: "0 0 48px",
+  },
+  header: {
+    background: "linear-gradient(135deg,#141A4E 0%,#1E2A78 60%,#28359C 100%)",
+    color: "#fff", padding: "28px 24px 88px",
+  },
+  wrap: { maxWidth: 1060, margin: "0 auto", padding: "0 16px" },
+  kpiRow: {
+    maxWidth: 1060, margin: "-64px auto 0", padding: "0 16px",
+    display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 12,
+  },
+  card: {
+    background: "#fff", borderRadius: 14, padding: "18px 20px",
+    boxShadow: "0 4px 18px rgba(20,26,78,.08)",
+  },
+  section: { maxWidth: 1060, margin: "20px auto 0", padding: "0 16px" },
+  h2: { fontSize: 17, fontWeight: 700, letterSpacing: ".04em", margin: "0 0 12px", color: "#141A4E" },
+  label: { fontSize: 12.5, color: "#6A7190", letterSpacing: ".08em", marginBottom: 6 },
+  big: { fontSize: 30, fontWeight: 800, fontVariantNumeric: "tabular-nums" },
+  tag: (t) => ({
+    display: "inline-block", fontSize: 11.5, fontWeight: 700, padding: "2px 8px",
+    borderRadius: 999, letterSpacing: ".06em",
+    background: t === "actual" ? "#E2F5EC" : "#EDEFFA",
+    color: t === "actual" ? "#0B7A50" : "#3A47B8",
+  }),
+  kindTag: (k) => ({
+    display: "inline-block", fontSize: 11.5, fontWeight: 700, padding: "2px 8px",
+    borderRadius: 999,
+    background: k === "固定" ? "#E8ECFB" : k === "資産" ? "#E2F5EC" : "#FFF1E4",
+    color: k === "固定" ? "#2F3DA8" : k === "資産" ? "#0B7A50" : "#B25E12",
+  }),
+  th: {
+    textAlign: "right", padding: "8px 10px", fontSize: 12.5, color: "#6A7190",
+    borderBottom: "1px solid #E4E7F0", whiteSpace: "nowrap",
+    // 縦スクロール時にヘッダー行を固定(各表はスクロールコンテナで包む)
+    position: "sticky", top: 0, background: "#fff", zIndex: 2,
+  },
+  scrollY: { maxHeight: 440, overflow: "auto" },
+  td: {
+    textAlign: "right", padding: "9px 10px", fontSize: 14,
+    borderBottom: "1px solid #F0F2F8", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap",
+  },
+  input: {
+    padding: "7px 10px", borderRadius: 8, border: "1px solid #D6DAE8",
+    fontSize: 14, boxSizing: "border-box",
+  },
+  btn: {
+    background: "#1E2A78", color: "#fff", border: "none", borderRadius: 8,
+    padding: "9px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer",
+  },
+  btnGhost: {
+    background: "transparent", color: "#B23A48", border: "1px solid #E4B4BB",
+    borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer",
+  },
+  btnAdd: {
+    background: "#F0F2FB", color: "#1E2A78", border: "1px dashed #B9C1E8",
+    borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+  },
+  btnLight: {
+    background: "#F0F2FB", color: "#1E2A78", border: "1px solid #C6CDEB",
+    borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+  },
+  toggleLabel: {
+    display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13,
+    color: "#3A4160", cursor: "pointer", userSelect: "none",
+  },
+};
+
+// メインコンポーネントの外で定義する(内側で定義すると再レンダーごとに別コンポーネント扱いになり、
+// 入力欄が1文字ごとにアンマウント→フォーカス喪失するため)
+const BudgetList = ({ kind, title, list, total, accent, onUpdate, onAdd, onRemove }) => (
+  <div style={{ flex: 1, minWidth: 300 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: "#141A4E" }}>{title}</div>
+      <div style={{ fontSize: 14, fontWeight: 800, color: accent, fontVariantNumeric: "tabular-nums" }}>
+        計 {yen(total)}
+      </div>
+    </div>
+    {list.map((b, i) => (
+      <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
+        <input style={{ ...S.input, flex: 1, minWidth: 0 }} value={b.name} placeholder="項目名"
+          onChange={(e) => onUpdate(kind, i, "name", e.target.value)} />
+        <input style={{ ...S.input, width: 110, textAlign: "right", fontVariantNumeric: "tabular-nums" }}
+          type="number" step={1000} value={b.amount}
+          onChange={(e) => onUpdate(kind, i, "amount", e.target.value)} />
+        <button onClick={() => onRemove(kind, i)}
+          style={{ background: "none", border: "none", color: "#B23A48", cursor: "pointer", fontSize: 17, padding: "0 4px" }}
+          aria-label="削除">×</button>
+      </div>
+    ))}
+    <button style={S.btnAdd} onClick={() => onAdd(kind)}>+ 項目を追加</button>
+  </div>
+);
+
 // ---------- メイン ----------
 export default function CashflowDashboard() {
   const [months, setMonths] = useState(INITIAL_MONTHS);
@@ -427,8 +526,9 @@ export default function CashflowDashboard() {
   const updateBudget = (kind, idx, field, value) => {
     setAssumptions((a) => {
       const key = kind === "fixed" ? "fixedCosts" : kind === "asset" ? "assetBudgets" : "variableBudgets";
+      // 金額は空欄のまま編集できるよう、空文字はそのまま保持(集計側で Number() に変換される)
       const list = (a[key] || []).map((x, i) =>
-        i === idx ? { ...x, [field]: field === "amount" ? Number(value) || 0 : value } : x
+        i === idx ? { ...x, [field]: field === "amount" ? (value === "" ? "" : Number(value) || 0) : value } : x
       );
       return { ...a, [key]: list };
     });
@@ -451,7 +551,7 @@ export default function CashflowDashboard() {
     setAssumptions((a) => ({
       ...a,
       oneOffs: (a.oneOffs || []).map((x, i) =>
-        i === idx ? { ...x, [field]: field === "amount" ? Number(value) || 0 : value } : x
+        i === idx ? { ...x, [field]: field === "amount" ? (value === "" ? "" : Number(value) || 0) : value } : x
       ),
     }));
   };
@@ -464,103 +564,6 @@ export default function CashflowDashboard() {
   const removeOneOff = (idx) => {
     setAssumptions((a) => ({ ...a, oneOffs: (a.oneOffs || []).filter((_, i) => i !== idx) }));
   };
-
-  // ---------- スタイル ----------
-  const S = {
-    page: {
-      minHeight: "100vh", background: "#EEF0F6", color: "#141A33",
-      fontFamily: "'Hiragino Sans','Yu Gothic UI','Noto Sans JP',sans-serif",
-      padding: "0 0 48px",
-    },
-    header: {
-      background: "linear-gradient(135deg,#141A4E 0%,#1E2A78 60%,#28359C 100%)",
-      color: "#fff", padding: "28px 24px 88px",
-    },
-    wrap: { maxWidth: 1060, margin: "0 auto", padding: "0 16px" },
-    kpiRow: {
-      maxWidth: 1060, margin: "-64px auto 0", padding: "0 16px",
-      display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 12,
-    },
-    card: {
-      background: "#fff", borderRadius: 14, padding: "18px 20px",
-      boxShadow: "0 4px 18px rgba(20,26,78,.08)",
-    },
-    section: { maxWidth: 1060, margin: "20px auto 0", padding: "0 16px" },
-    h2: { fontSize: 17, fontWeight: 700, letterSpacing: ".04em", margin: "0 0 12px", color: "#141A4E" },
-    label: { fontSize: 12.5, color: "#6A7190", letterSpacing: ".08em", marginBottom: 6 },
-    big: { fontSize: 30, fontWeight: 800, fontVariantNumeric: "tabular-nums" },
-    tag: (t) => ({
-      display: "inline-block", fontSize: 11.5, fontWeight: 700, padding: "2px 8px",
-      borderRadius: 999, letterSpacing: ".06em",
-      background: t === "actual" ? "#E2F5EC" : "#EDEFFA",
-      color: t === "actual" ? "#0B7A50" : "#3A47B8",
-    }),
-    kindTag: (k) => ({
-      display: "inline-block", fontSize: 11.5, fontWeight: 700, padding: "2px 8px",
-      borderRadius: 999,
-      background: k === "固定" ? "#E8ECFB" : k === "資産" ? "#E2F5EC" : "#FFF1E4",
-      color: k === "固定" ? "#2F3DA8" : k === "資産" ? "#0B7A50" : "#B25E12",
-    }),
-    th: {
-      textAlign: "right", padding: "8px 10px", fontSize: 12.5, color: "#6A7190",
-      borderBottom: "1px solid #E4E7F0", whiteSpace: "nowrap",
-      // 縦スクロール時にヘッダー行を固定(各表はスクロールコンテナで包む)
-      position: "sticky", top: 0, background: "#fff", zIndex: 2,
-    },
-    scrollY: { maxHeight: 440, overflow: "auto" },
-    td: {
-      textAlign: "right", padding: "9px 10px", fontSize: 14,
-      borderBottom: "1px solid #F0F2F8", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap",
-    },
-    input: {
-      padding: "7px 10px", borderRadius: 8, border: "1px solid #D6DAE8",
-      fontSize: 14, boxSizing: "border-box",
-    },
-    btn: {
-      background: "#1E2A78", color: "#fff", border: "none", borderRadius: 8,
-      padding: "9px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer",
-    },
-    btnGhost: {
-      background: "transparent", color: "#B23A48", border: "1px solid #E4B4BB",
-      borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer",
-    },
-    btnAdd: {
-      background: "#F0F2FB", color: "#1E2A78", border: "1px dashed #B9C1E8",
-      borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer",
-    },
-    btnLight: {
-      background: "#F0F2FB", color: "#1E2A78", border: "1px solid #C6CDEB",
-      borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer",
-    },
-    toggleLabel: {
-      display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13,
-      color: "#3A4160", cursor: "pointer", userSelect: "none",
-    },
-  };
-
-  const BudgetList = ({ kind, title, list, total, accent }) => (
-    <div style={{ flex: 1, minWidth: 300 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: "#141A4E" }}>{title}</div>
-        <div style={{ fontSize: 14, fontWeight: 800, color: accent, fontVariantNumeric: "tabular-nums" }}>
-          計 {yen(total)}
-        </div>
-      </div>
-      {list.map((b, i) => (
-        <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
-          <input style={{ ...S.input, flex: 1, minWidth: 0 }} value={b.name} placeholder="項目名"
-            onChange={(e) => updateBudget(kind, i, "name", e.target.value)} />
-          <input style={{ ...S.input, width: 110, textAlign: "right", fontVariantNumeric: "tabular-nums" }}
-            type="number" step={1000} value={b.amount}
-            onChange={(e) => updateBudget(kind, i, "amount", e.target.value)} />
-          <button onClick={() => removeBudget(kind, i)}
-            style={{ background: "none", border: "none", color: "#B23A48", cursor: "pointer", fontSize: 17, padding: "0 4px" }}
-            aria-label="削除">×</button>
-        </div>
-      ))}
-      <button style={S.btnAdd} onClick={() => addBudget(kind)}>+ 項目を追加</button>
-    </div>
-  );
 
   return (
     <div style={S.page}>
@@ -745,9 +748,12 @@ export default function CashflowDashboard() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 32, flexWrap: "wrap" }}>
-            <BudgetList kind="fixed" title="固定費" list={assumptions.fixedCosts} total={fixedTotal} accent="#2F3DA8" />
-            <BudgetList kind="variable" title="変動費(予算)" list={assumptions.variableBudgets} total={varTotal} accent="#B25E12" />
-            <BudgetList kind="asset" title="資産へ(投資・自己口座)" list={assumptions.assetBudgets || []} total={assetTotal} accent="#0B7A50" />
+            <BudgetList kind="fixed" title="固定費" list={assumptions.fixedCosts} total={fixedTotal} accent="#2F3DA8"
+              onUpdate={updateBudget} onAdd={addBudget} onRemove={removeBudget} />
+            <BudgetList kind="variable" title="変動費(予算)" list={assumptions.variableBudgets} total={varTotal} accent="#B25E12"
+              onUpdate={updateBudget} onAdd={addBudget} onRemove={removeBudget} />
+            <BudgetList kind="asset" title="資産へ(投資・自己口座)" list={assumptions.assetBudgets || []} total={assetTotal} accent="#0B7A50"
+              onUpdate={updateBudget} onAdd={addBudget} onRemove={removeBudget} />
           </div>
 
           {/* 単発支出(予定) */}
